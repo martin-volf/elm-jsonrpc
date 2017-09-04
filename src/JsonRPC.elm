@@ -15,6 +15,50 @@ module JsonRPC
         , simpleParam
         )
 
+{-| This library helps with building and chaining JSON RPC requests.
+While running a single RPC request (and handling all potential
+outcomes) is straightforward using built-in means of Elm, it becomes
+more difficult when several requests need to be run with latter
+depending on the former.
+
+
+# RPC context
+
+Every RPC request (or RPC command, see below) needs an instance of
+`Context`.  JsonRPC commands use only fields `url` and `rpcId`, but it
+is an extensible record, so feel free to add anything that your
+commands may need.
+
+@docs Context, initCtx
+
+# The `Command` type
+
+Every request is of the following type:
+
+@docs Command
+
+The three type variables are:
+
+ * `ctx` - state; in actual commands it needs to be (an extension of)
+   `Context`, you may want to extend it to contain your model
+ * `msg` - the application message type
+ * `a` - the type that the request eventually evaluates to.
+
+With `request` you can build individual commands, but other tools are
+needed to chain commands (`andThen`) and to build special commands.
+
+@docs request, unit, map, andThen, noop
+
+## Utility functions
+
+@docs mapCtx, withCtx
+
+@docs foldList
+
+@docs requestBody, simpleParam
+
+-}
+
 import Result
 import Http
 import Json.Decode as Decode
@@ -22,13 +66,14 @@ import Json.Encode as Encode
 import List
 
 
-{-| RPC requests need state data; minimal state data need to contain
-URL and request id.
+{-| Minimal RPC state data need to contain URL and request id.
 -}
 type alias Context m =
     { m | url : String, rpcId : Int }
 
 
+{-| Initialize an `Context` instance with default values.
+-}
 initCtx : Context ctx -> Context ctx
 initCtx ctx =
     { ctx | url = "/jsonrpc", rpcId = 0 }
@@ -53,7 +98,7 @@ mapC fn conta cnv resb =
     conta cnv (resb << fn)
 
 
-{-| The RPC command (query) in action.
+{-| The RPC command (request) in action.
 -}
 type alias Command ctx msg a =
     Context ctx -> Conts msg (Cmd msg) ( Result String a, Context ctx )
@@ -97,6 +142,9 @@ andThenStC next stta m =
         |> andThenC (uncurry next)
 
 
+{-| Utility function to make a request parameter pair from two
+strings.
+-}
 simpleParam : String -> String -> ( String, Encode.Value )
 simpleParam param val =
     ( param, Encode.string val )
