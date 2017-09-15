@@ -5,7 +5,7 @@ module JsonRPC
         , mapCtx
         , withCtx
         , Command
-        , unit
+        , return
         , map
         , andThen
         , requestBody
@@ -47,7 +47,7 @@ The three type variables are:
 With `request` you can build individual commands, but other tools are
 needed to chain commands (`andThen`) and to build special commands.
 
-@docs request, unit, map, andThen, noop
+@docs request, return, map, andThen, noop
 
 ## Utility functions
 
@@ -83,8 +83,8 @@ type alias Conts r s a =
     (s -> r) -> (a -> r) -> r
 
 
-unitC : a -> Conts r s a
-unitC a _ =
+returnC : a -> Conts r s a
+returnC a _ =
     (|>) a
 
 
@@ -107,9 +107,9 @@ type alias Command ctx msg a =
 {-| The "OK" command (monadic return) - wrap a value into a dummy
 command.
 -}
-unit : a -> Command ctx msg a
-unit a ctx =
-    unitC ( Ok a, ctx )
+return : a -> Command ctx msg a
+return a ctx =
+    returnC ( Ok a, ctx )
 
 
 {-| Apply a function to the command result.
@@ -170,7 +170,7 @@ requestBody method id params =
 -}
 noop : Command ctx msg ()
 noop =
-    unit ()
+    return ()
 
 
 {-| Given a function changing the context, construct the command that
@@ -211,7 +211,7 @@ manner.
 -}
 foldList : (a -> Command ctx msg b) -> List a -> Command ctx msg (List b)
 foldList fn alist =
-    List.foldr (folded fn) (unit []) alist
+    List.foldr (folded fn) (return []) alist
 
 
 folded : (a -> Command ctx msg b) -> a -> Command ctx msg (List b) -> Command ctx msg (List b)
