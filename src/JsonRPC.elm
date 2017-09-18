@@ -1,35 +1,44 @@
 module JsonRPC
     exposing
         ( Context
-        , initCtx
         , mapCtx
-        , withCtx
+        , readCtx
+        , updateState
+        , readState
         , Command
         , return
+        , fail
         , map
+        , map2
+        , mapError
         , andThen
         , requestBody
         , noop
         , request
+        , run
+        , finalState
         , foldList
         , simpleParam
         )
 
-{-| This library helps with building and chaining JSON RPC requests.
-While running a single RPC request (and handling all potential
-outcomes) is straightforward using built-in means of Elm, it becomes
-more difficult when several requests need to be run with latter
-depending on the former.
+{-| This library helps with building and chaining stateful JSON RPC
+requests. While running a single RPC request (and handling all
+potential outcomes) or simple chaining stateless requests is
+straightforward using built-in means of Elm, it becomes more difficult
+when several requests need to be run with one depending - both in
+terms of the result and side-effects - on the previous.
 
 
 # RPC context
 
 Every RPC request (or RPC command, see below) needs an instance of
-`Context`.  JsonRPC commands use only fields `url` and `rpcId`, but it
-is an extensible record, so feel free to add anything that your
-commands may need.
+`Context`. In most cases you don't need to access the instance
+itself, but you may access the state that the context instance wraps.
+The state can be anything your application needs, from a single
+integer to the full application model.
 
-@docs Context, initCtx
+@docs Context
+
 
 # The `Command` type
 
@@ -39,19 +48,21 @@ Every request is of the following type:
 
 The three type variables are:
 
- * `ctx` - state; in actual commands it needs to be (an extension of)
-   `Context`, you may want to extend it to contain your model
- * `msg` - the application message type
- * `a` - the type that the request eventually evaluates to.
+  - `state` - request state - see above
+  - `err` - error type (typically `Http.Error` or something wrapping it)
+  - `a` - the type that the request eventually evaluates to.
 
 With `request` you can build individual commands, but other tools are
 needed to chain commands (`andThen`) and to build special commands.
 
-@docs request, return, map, andThen, noop
+Finally, when your chain of commands is ready, launch it with `run`.
+
+@docs request, return, fail, map, map2, andThen, noop, run
+
 
 ## Utility functions
 
-@docs mapCtx, withCtx
+@docs mapCtx, readCtx, updateState, readState, finalState, mapError
 
 @docs foldList
 
@@ -59,87 +70,74 @@ needed to chain commands (`andThen`) and to build special commands.
 
 -}
 
-import Result
 import Http
 import Json.Decode as Decode
 import Json.Encode as Encode
 import List
+import Result
+import Task exposing (Task)
+import Tuple
 
 
 {-| Minimal RPC state data need to contain URL and request id.
 -}
-type alias Context m =
-    { m | url : String, rpcId : Int }
-
-
-{-| Initialize an `Context` instance with default values.
--}
-initCtx : Context ctx -> Context ctx
-initCtx ctx =
-    { ctx | url = "/jsonrpc", rpcId = 0 }
-
-
-type alias Conts r s a =
-    (s -> r) -> (a -> r) -> r
-
-
-returnC : a -> Conts r s a
-returnC a _ =
-    (|>) a
-
-
-andThenC : (a -> Conts r s b) -> Conts r s a -> Conts r s b
-andThenC next conta cnv resb =
-    conta cnv (\a -> next a cnv resb)
-
-
-mapC : (a -> b) -> Conts r s a -> Conts r s b
-mapC fn conta cnv resb =
-    conta cnv (resb << fn)
+type alias Context state =
+    { url : String, rpcId : Int, state : state }
 
 
 {-| The RPC command (request) in action.
 -}
-type alias Command ctx msg a =
-    Context ctx -> Conts msg (Cmd msg) ( Result String a, Context ctx )
+type alias Command state err a =
+    Context state -> Task err ( Context state, a )
 
 
 {-| The "OK" command (monadic return) - wrap a value into a dummy
 command.
 -}
-return : a -> Command ctx msg a
+return : a -> Command state err a
 return a ctx =
-    returnC ( Ok a, ctx )
+    Task.succeed ( ctx, a )
 
 
-{-| Apply a function to the command result.
+{-| Apply a transform function to the command result.
 -}
-map : (a -> b) -> Command ctx msg a -> Command ctx msg b
+map : (a -> b) -> Command state err a -> Command state err b
 map fn cmd =
-    mapC (\( res, ctx ) -> ( Result.map fn res, ctx )) << cmd
+    cmd >> Task.map (Tuple.mapSecond fn)
+
+
+{-| Transform results of two successive commands.
+-}
+map2 : (a -> b -> c) -> Command state err a -> Command state err b -> Command state err c
+map2 fn cmda cmdb =
+    cmda
+        |> andThen (\a -> (map (fn a) cmdb))
+
+
+{-| Transform the error value. This can be useful when you need to
+change the error type; for instance, you need to process two types of errors
+
+    type AppError
+        = HttpErr Http.Error
+        | OtherErr String
+
+But since `request` yields a command with `Http.Error`, you need to
+transform the command like
+
+    request ...
+        |> mapError HttpErr
+
+-}
+mapError : (err1 -> err2) -> Command state err1 a -> Command state err2 a
+mapError fn cmd =
+    Task.mapError fn << cmd
 
 
 {-| Chain a command and a command-producing function.
 -}
-andThen : (a -> Command ctx msg b) -> Command ctx msg a -> Command ctx msg b
+andThen : (a -> Command state err b) -> Command state err a -> Command state err b
 andThen next cmd =
-    andThenStC (liftResult next) cmd
-
-
-liftResult : (a -> Command ctx msg b) -> Result String a -> Command ctx msg b
-liftResult next ra =
-    case ra of
-        Err err ->
-            \ctx -> \_ -> \cnt -> cnt ( Err err, ctx )
-
-        Ok a ->
-            next a
-
-
-andThenStC : (a -> m -> Conts r s ( b, m )) -> (m -> Conts r s ( a, m )) -> m -> Conts r s ( b, m )
-andThenStC next stta m =
-    stta m
-        |> andThenC (uncurry next)
+    cmd >> Task.andThen (uncurry (flip next))
 
 
 {-| Utility function to make a request parameter pair from two
@@ -168,24 +166,38 @@ requestBody method id params =
 
 {-| Empty, do-nothing command.
 -}
-noop : Command ctx msg ()
+noop : Command state err ()
 noop =
     return ()
+
+
+{-| Always failing command.
+-}
+fail : err -> Command state err a
+fail err _ =
+    Task.fail err
+
+
+{-| Update the request context.
+-}
+mapCtx : (Context state -> Context state) -> Command state err ()
+mapCtx fn ctx =
+    Task.succeed ( fn ctx, () )
 
 
 {-| Given a function changing the context, construct the command that
 does not produce any value but as a "side-effect" applies this
 function.
 -}
-mapCtx : (Context ctx -> Context ctx) -> Command ctx msg ()
-mapCtx mapf ctx ress =
-    (|>) ( Ok (), mapf ctx )
+updateState : (state -> state) -> Command state err ()
+updateState fn =
+    mapCtx (\ctx -> { ctx | state = fn ctx.state })
 
 
 {-| Construct a command from a method name, list of parameters, and a JSON decoder.
 -}
-request : String -> List ( String, Encode.Value ) -> Decode.Decoder a -> Command ctx msg a
-request method params decoder ctx ress continue =
+request : String -> List ( String, Encode.Value ) -> Decode.Decoder a -> Command state Http.Error a
+request method params decoder ctx =
     let
         id =
             ctx.rpcId
@@ -194,27 +206,56 @@ request method params decoder ctx ress continue =
             { ctx | rpcId = id + 1 }
     in
         Http.post ctx.url (requestBody method id params) (Decode.field "result" decoder)
-            |> Http.send (\res -> continue ( Result.mapError toString res, nctx ))
-            |> ress
+            |> Http.toTask
+            |> Task.map (\a -> ( nctx, a ))
 
 
-{-| A dummy command that just produces the context (state) as its
-value.
+{-| Run the chain of commands. You need to provide the initial
+state as well as the URL to be used for requests. The final state is
+lost; if you are interested in it, either use `readState`, or
+`finalState` if you need both the state as well as the final value.
 -}
-withCtx : Command ctx msg (Context ctx)
-withCtx ctx _ =
-    (|>) ( Ok ctx, ctx )
+run : String -> state -> (Result error a -> msg) -> Command state error a -> Cmd msg
+run url initState display command =
+    let
+        initCtx =
+            { rpcId = 0, url = url, state = initState }
+    in
+        command initCtx
+            |> Task.attempt (Result.map Tuple.second >> display)
+
+
+{-| A dummy command that just produces the context as its value.
+-}
+readCtx : Command state err (Context state)
+readCtx ctx =
+    Task.succeed ( ctx, ctx )
+
+
+{-| A dummy command that just produces the state as its value.
+-}
+readState : Command state err state
+readState =
+    readCtx >> Task.map (Tuple.mapSecond .state)
+
+
+{-| Similar to `readState`, but produce both the last value as well as
+state. Might be useful as the last in the chain of commands.
+-}
+finalState : a -> Command state err ( state, a )
+finalState value =
+    readState |> andThen (\state -> return ( state, value ))
 
 
 {-| Apply the computation to all elements in the list, in a foldr-like
 manner.
 -}
-foldList : (a -> Command ctx msg b) -> List a -> Command ctx msg (List b)
+foldList : (a -> Command state err b) -> List a -> Command state err (List b)
 foldList fn alist =
     List.foldr (folded fn) (return []) alist
 
 
-folded : (a -> Command ctx msg b) -> a -> Command ctx msg (List b) -> Command ctx msg (List b)
+folded : (a -> Command state err b) -> a -> Command state err (List b) -> Command state err (List b)
 folded fn a blistcmd =
     fn a
         |> andThen (\b -> map ((::) b) blistcmd)

@@ -63,5 +63,5 @@ parse s =
         Ok ( _, _, tree ) ->
             Ok tree
 
-        Err ( _, stream, ms ) ->
-            Err ("parse error: " ++ toString ms ++ ", " ++ toString stream)
+        Err ( _, _, ms ) ->
+            Err (String.join " / " ms)

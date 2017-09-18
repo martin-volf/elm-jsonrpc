@@ -10,22 +10,20 @@ import Expr exposing (Tree(..))
 import Html exposing (div, text, label, input, button, ul, li, Html)
 import Html.Attributes exposing (class, value)
 import Html.Events exposing (onInput, onClick)
+import Http
 import Json.Decode as Decode
 import Json.Encode as Encode
 import JsonRPC
 import JsonRPC.Infix exposing ((|>>=), (|>>), (-:-))
-import Task
 
 
 type alias Model =
-    JsonRPC.Context { expression : String, response : String }
+    { expression : String, response : String }
 
 
-{-| We need to init fields "inherited" from JsonRPC.Context too.
--}
 initModel : Model
 initModel =
-    { url = "http://localhost:4000/jsonrpc", rpcId = 0, expression = "1+2", response = "resp" }
+    { expression = "1+2", response = "resp" }
 
 
 view : Model -> Html Msg
@@ -41,11 +39,19 @@ view model =
         ]
 
 
+type Error
+    = HttpErr Http.Error
+    | ParseErr String
+
+
+type alias State =
+    ()
+
+
 type Msg
     = UpdateExpression String
     | Start
-    | Compute (Cmd Msg)
-    | Display ( Result String Int, Model )
+    | Display (Result Error Int)
 
 
 update : Msg -> Model -> ( Model, Cmd Msg )
@@ -55,43 +61,40 @@ update msg model =
             ( { model | expression = expr }, Cmd.none )
 
         Start ->
-            ( model, Task.succeed model |> Task.perform compute )
+            ( model, compute model.expression )
 
-        Compute cmd ->
-            -- just pass on the command
-            ( model, cmd )
-
-        Display ( res, m ) ->
-            ( updateResponse m res, Cmd.none )
+        Display res ->
+            ( updateResponse model res, Cmd.none )
 
 
-updateResponse : Model -> Result String c -> Model
+updateResponse : Model -> Result Error Int -> Model
 updateResponse model res =
-    let
-        response =
-            case res of
-                Err err ->
-                    "failure: " ++ err
+    case res of
+        Err (HttpErr err) ->
+            { model | response = "RPC failure: " ++ toString err }
 
-                Ok i ->
-                    "result: " ++ toString i
-    in
-        { model | response = response }
+        Err (ParseErr err) ->
+            { model | response = "Parsing failed: " ++ err }
+
+        Ok i ->
+            { model | response = "result: " ++ toString i }
 
 
 {-| Parse the expression and create the RPC command chain.
 -}
-compute : Model -> Msg
-compute model =
-    case Expr.parse model.expression of
+compute : String -> Cmd Msg
+compute expr =
+    (case Expr.parse expr of
         Ok tree ->
-            runComputation tree model Compute Display
+            runComputation tree
 
         Err err ->
-            Display ( Err err, model )
+            JsonRPC.fail (ParseErr err)
+    )
+        |> JsonRPC.run "http://localhost:4000/jsonrpc" () Display
 
 
-runComputation : Tree -> JsonRPC.Command Model Msg Int
+runComputation : Tree -> JsonRPC.Command State Error Int
 runComputation tree =
     case tree of
         Int i ->
@@ -110,21 +113,20 @@ runComputation tree =
             runOperation "divide" t1 t2
 
 
-runOperation : String -> Tree -> Tree -> JsonRPC.Command Model Msg Int
+runOperation : String -> Tree -> Tree -> JsonRPC.Command State Error Int
 runOperation oper t1 t2 =
     runComputation t1
-        |>>=
-            (\a ->
-                runComputation t2
-                    |>>=
-                        (\b ->
-                            JsonRPC.request oper
-                                [ ( "a", Encode.int a )
-                                , ( "b", Encode.int b )
-                                ]
-                                Decode.int
-                        )
-            )
+        |>>= ((|>>=) (runComputation t2) << request oper)
+
+
+request : String -> Int -> Int -> JsonRPC.Command State Error Int
+request oper a b =
+    JsonRPC.request oper
+        [ ( "a", Encode.int a )
+        , ( "b", Encode.int b )
+        ]
+        Decode.int
+        |> JsonRPC.mapError HttpErr
 
 
 main : Program Never Model Msg
