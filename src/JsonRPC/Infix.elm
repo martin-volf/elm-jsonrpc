@@ -16,14 +16,14 @@ import Json.Encode as Encode
 
 {-| Infix operator variant for `X |> JsonRPC.andThen FY`.
 -}
-(|>>=) : Command ctx msg a -> (a -> Command ctx msg b) -> Command ctx msg b
+(|>>=) : Command state msg err a -> (a -> Command state msg err b) -> Command state msg err b
 (|>>=) cmd next =
     andThen next cmd
 
 
 {-| Infix operator for `X |> JsonRPC.andThen (\_ -> Y)`.
 -}
-(|>>) : Command ctx msg a -> Command ctx msg b -> Command ctx msg b
+(|>>) : Command state msg err a -> Command state msg err b -> Command state msg err b
 (|>>) cmd1 cmd2 =
     andThen (\_ -> cmd2) cmd1
 
