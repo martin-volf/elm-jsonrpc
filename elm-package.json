@@ -1,7 +1,7 @@
 {
     "version": "1.0.0",
     "summary": "JSON RPC client library",
-    "repository": "https://github.com/martin.volf/elm-jsonrpc.git",
+    "repository": "https://github.com/martin-volf/elm-jsonrpc.git",
     "license": "MIT",
     "source-directories": [
         "src"

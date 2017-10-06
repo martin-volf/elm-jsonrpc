@@ -10,7 +10,7 @@ passing results may become troublesome.
 ## Installation
 
 ```bash
-elm package install martin.volf/elm-jsonrpc
+elm package install martin-volf/elm-jsonrpc
 ```
 
 

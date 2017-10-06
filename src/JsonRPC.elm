@@ -48,8 +48,10 @@ Every request is of the following type:
 
 The three type variables are:
 
-  - `state` - request state - see above
-  - `err` - error type (typically `Http.Error` or something wrapping it)
+  - `state` - request state, anything that you need to pass between
+    commands, see above
+  - `err` - error type (typically `Http.Error` or something wrapping
+    it)
   - `a` - the type that the request eventually evaluates to.
 
 With `request` you can build individual commands, but other tools are
@@ -99,7 +101,7 @@ return a ctx =
     Task.succeed ( ctx, a )
 
 
-{-| Apply a transform function to the command result.
+{-| Apply a function to the command result.
 -}
 map : (a -> b) -> Command state err a -> Command state err b
 map fn cmd =
@@ -178,7 +180,9 @@ fail err _ =
     Task.fail err
 
 
-{-| Update the request context.
+{-| Given a function changing the context, construct the command that
+does not produce any value but as a "side-effect" applies this
+function.
 -}
 mapCtx : (Context state -> Context state) -> Command state err ()
 mapCtx fn ctx =
