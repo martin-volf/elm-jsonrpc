@@ -18,12 +18,12 @@ import JsonRPC.Infix exposing ((|>>=), (|>>), (-:-))
 
 
 type alias Model =
-    { expression : String, response : String }
+    { expression : String, response : String, ops : List String }
 
 
 initModel : Model
 initModel =
-    { expression = "1+2", response = "resp" }
+    { expression = "1+2", response = "resp", ops = [] }
 
 
 view : Model -> Html Msg
@@ -36,6 +36,8 @@ view model =
             ]
         , div [ class "response" ]
             [ text model.response ]
+        , ul [ class "operations" ]
+            (List.map (li [] << List.singleton << text) model.ops)
         ]
 
 
@@ -45,13 +47,13 @@ type Error
 
 
 type alias State =
-    ()
+    List String
 
 
 type Msg
     = UpdateExpression String
     | Start
-    | Display (Result Error Int)
+    | Display (Result Error ( State, Int ))
 
 
 update : Msg -> Model -> ( Model, Cmd Msg )
@@ -67,7 +69,7 @@ update msg model =
             ( updateResponse model res, Cmd.none )
 
 
-updateResponse : Model -> Result Error Int -> Model
+updateResponse : Model -> Result Error ( State, Int ) -> Model
 updateResponse model res =
     case res of
         Err (HttpErr err) ->
@@ -76,8 +78,8 @@ updateResponse model res =
         Err (ParseErr err) ->
             { model | response = "Parsing failed: " ++ err }
 
-        Ok i ->
-            { model | response = "result: " ++ toString i }
+        Ok ( ops, i ) ->
+            { model | response = "result: " ++ toString i, ops = List.reverse ops }
 
 
 {-| Parse the expression and create the RPC command chain.
@@ -86,12 +88,12 @@ compute : String -> Cmd Msg
 compute expr =
     (case Expr.parse expr of
         Ok tree ->
-            runComputation tree
+            runComputation tree |>>= JsonRPC.finalState
 
         Err err ->
             JsonRPC.fail (ParseErr err)
     )
-        |> JsonRPC.run "http://localhost:4000/jsonrpc" () Display
+        |> JsonRPC.run "http://localhost:4000/jsonrpc" [] Display
 
 
 runComputation : Tree -> JsonRPC.Command State Error Int
@@ -127,6 +129,10 @@ request oper a b =
         ]
         Decode.int
         |> JsonRPC.mapError HttpErr
+        |>>=
+            \res ->
+                JsonRPC.updateState ((::) (toString a ++ " " ++ oper ++ " " ++ toString b ++ " -> " ++ toString res))
+                    |>> JsonRPC.return res
 
 
 main : Program Never Model Msg
